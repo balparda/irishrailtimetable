@@ -1,0 +1,7 @@
+syntax: glob
+*.pyc
+*.h5
+.coverage
+htmlcov
+training_checkpoints*
+__pycache__
