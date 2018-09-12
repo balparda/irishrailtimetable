@@ -26,6 +26,11 @@ _DESIRED_STOPS = ('Howth Junction and Donaghmede', 'Tara St', 'Grand Canal Dock'
 _SKIP_ALL_IRREGULAR_SCHEDULES = True
 
 _DIRECTION = lambda int_direction_id: 'SOUTH' if int_direction_id else 'NORTH'
+_WEEK_TYPE = {
+    0: 'MON-FRI',
+    1: 'SATURDAY',
+    2: 'SUNDAY',
+}
 _ONE_DAY = datetime.timedelta(days=1)
 _LOOK_AHEAD_IN_DAYS = 14
 
@@ -177,16 +182,24 @@ def main(_):
   # get the calendar
   service_dates, service_exclusions = _LoadServiceDates()
   # load trips and timetables, filtered by the desired route
+  # TODO: include feature to allow multiple desired routes so user can look at more complete data
   trips = _LoadTripsForRoute(desired_route_id, service_exclusions)
   timetable = _LoadTimetableForTrips(set(trips.keys()))
-  # print all the trips, sorted by start time, only for the interesting stops
+  # get all the trips, sorted by start time, only for the interesting stops
   trip_starts = _GetTripStarts(trips, timetable)
-  for int_direction_id in (1, 0):
-    for week_index, week_type in ((0, 'MON-FRI'), (1, 'SATURDAY'), (2, 'SUNDAY')):
-      print()
-      print('DIRECTION: %s' % _DIRECTION(int_direction_id))
-      print('WEEKDAY TYPE: %s' % week_type)
-      print()
+  # now we calculate the data to be output, which is like:
+  #   {int_direction_id: [
+  #       {'id': trip_id, 'week': week_type,
+  #        'start': (stop_id, arrival_time), 'end': (stop_id, arrival_time),
+  #        'stops': [(stop_id, arrival_time), ...more stops...]}, ...more trips...]}
+  output_table = {0: [], 1: []}
+  for int_direction_id in sorted(output_table.keys()):
+    trips_table = output_table[int_direction_id]
+    for week_index in sorted(_WEEK_TYPE.keys()):
+      # print()
+      # print('DIRECTION: %s' % _DIRECTION(int_direction_id))
+      # print('WEEKDAY TYPE: %s' % week_type)
+      # print()
       trip_count = 0
       for trip_start in sorted(trip_starts.keys()):
         for trip_id in sorted(trip_starts[trip_start]):
@@ -198,23 +211,44 @@ def main(_):
             logging.debug('Skipping trip %s because it has an irregular schedule', trip_id)
             continue
           if trip[1] == int_direction_id and week_schedule[week_index]:
-            # here we have a trip we may want to print, so go figure it out
+            # here we have a trip we may want to output, so go figure it out
             trip_count += 1
             if trip_count > 10:  # TODO: remove trip counter?
               break
             trip_timetable = timetable[trip_id]
-            from_station, to_station = trip_timetable[0][1], trip_timetable[-1][1]
+            from_station, to_station = trip_timetable[0], trip_timetable[-1]
             filtered_stations = tuple(s for s in trip_timetable if s[1] in interesting_stops_ids)
             if len(filtered_stations) >= 2:
-              # this trip has at least 2 stops from our list, so it is to be printed
-              print()
-              print('TRIP %s @ %s / %s+%s / From: %s To: %s' % (
-                  trip_id, trip_start.strftime('%H:%M'),
-                  _DIRECTION(int_direction_id), week_type,
-                  stops[from_station], stops[to_station]))
-              for int_stop_sequence, stop_id, arrival_time in filtered_stations:
-                print('    %d: %s @ %s' % (
-                    int_stop_sequence, stops[stop_id], arrival_time.strftime('%H:%M')))
+              # this trip has at least 2 stops from our list, so it is to be output
+              # print()
+              # print('TRIP %s @ %s / %s+%s / From: %s To: %s' % (
+              #     trip_id, trip_start.strftime('%H:%M'),
+              #     _DIRECTION(int_direction_id), week_type,
+              #     stops[from_station], stops[to_station]))
+              trip_stops = []
+              for _, stop_id, arrival_time in filtered_stations:
+                # print('    %d: %s @ %s' % (
+                #     int_stop_sequence, stops[stop_id], arrival_time.strftime('%H:%M')))
+                trip_stops.append((stop_id, arrival_time))
+              trips_table.append({
+                  'id': trip_id, 'week': _WEEK_TYPE[week_index],
+                  'start': from_station[1:], 'end': to_station[1:], 'stops': trip_stops})
+  # having the data to output we generate the output
+  pdb.set_trace()
+  # first we have to find out the order of the stations for each direction and make sure this
+  # is consistent across all data, by checking them and adding None values in the missing ones
+  stop_ordering = {}
+  for int_direction_id in sorted(output_table.keys()):
+    trips_table = output_table[int_direction_id]
+    # find first stop list that has all the desired stops to use as a template
+    for trip in trips_table:
+      if len(trip['stops']) == len(_DESIRED_STOPS):
+        # this is it!
+        stop_ordering[int_direction_id] = tuple(s[0] for s in trip['stops'])
+        break
+    else:
+      raise util.Error('No trip was found that had all desired stops!')
+    # TODO: go through all and add None values
   logging.info('DONE')
 
 
