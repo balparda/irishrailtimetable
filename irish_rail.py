@@ -7,7 +7,7 @@
 import csv
 import datetime
 import logging
-# import pdb
+import pdb
 import sys
 
 from miscbalpardacode import util
@@ -19,6 +19,15 @@ __version__ = (1, 0)
 _DATA_DIR = 'data/irish_rail/'
 _DESIRED_ROUT_NAME = 'DART'
 _DESIRED_STOPS = ('Howth Junction and Donaghmede', 'Tara St', 'Grand Canal Dock')
+# var below: if True will skip *all* irregular schedules even if they serve some days that could
+# be listed; example would be a trip schedule that serves Mon & Sat as it is irregular but
+# could be listed on Sat's schedule even if not listed as a working day; there are a lot of
+# trips like this (that serve Sat or Sun but are irregular on weekdays)
+_SKIP_ALL_IRREGULAR_SCHEDULES = True
+
+_DIRECTION = lambda int_direction_id: 'SOUTH' if int_direction_id else 'NORTH'
+_ONE_DAY = datetime.timedelta(days=1)
+_LOOK_AHEAD_IN_DAYS = 14
 
 
 def _LoadRoutes():  # like {route_id: route_long_name}
@@ -52,13 +61,14 @@ def _StopIDsByName(stops, desired_stop_name):
   return stop_ids
 
 
-def _LoadTripsForRoute(desired_route_id):  # like {trip_id: (service_id, int_direction_id)}
+def _LoadTripsForRoute(desired_route_id, service_exclusions):
+  # like {trip_id: (service_id, int_direction_id)}
   with open(_DATA_DIR + 'trips.txt', 'rt', newline='') as csv_file:
     trips_reader = csv.reader(csv_file)
     next(trips_reader)  # we must skip the first line as it has the header!
     return {trip_id: (service_id, int(direction_id))
             for route_id, service_id, trip_id, _, _, direction_id in trips_reader
-            if route_id == desired_route_id}
+            if route_id == desired_route_id and service_id not in service_exclusions}
 
 
 def _LoadTimetableForTrips(desired_trips):
@@ -87,6 +97,72 @@ def _GetTripStarts(trips, timetable):  # like {start_time: {trip_id_1, trip_id_2
   return trip_starts
 
 
+def _AllDatesInPeriod(initial_date, final_date):
+  dt = initial_date
+  while dt <= final_date:
+    yield dt
+    dt += _ONE_DAY
+
+
+def _LoadServiceDates():
+  # like {service_id: (bool_working_days, bool_saturday, bool_sunday, bool_irregular)}
+  # service_exclusions like {service_id1, service_id2, ...}
+  # start by reading and storing all the exclusion dates for all services
+  date_inclusions, date_exclusions = {}, {}
+  with open(_DATA_DIR + 'calendar_dates.txt', 'rt', newline='') as csv_file:
+    exclusions_reader = csv.reader(csv_file)
+    next(exclusions_reader)  # we must skip the first line as it has the header!
+    for service_id, date, exception_type in exclusions_reader:
+      date, exception_type = datetime.datetime.strptime(date, '%Y%m%d'), int(exception_type)
+      if exception_type == 1:
+        date_inclusions.setdefault(service_id, set()).add(date)
+      elif exception_type == 2:
+        date_exclusions.setdefault(service_id, set()).add(date)
+      else:
+        raise util.Error('Unexpected exception_type in calendar_dates.txt!')
+  # determine next _LOOK_AHEAD_IN_DAYS of schedule days to use in filtering services
+  current_date = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+  look_ahead_days = set(_AllDatesInPeriod(
+      current_date, current_date + datetime.timedelta(days=_LOOK_AHEAD_IN_DAYS)))
+  # now read calendar to get all services and determine exclusions
+  with open(_DATA_DIR + 'calendar.txt', 'rt', newline='') as csv_file:
+    calendar_reader = csv.reader(csv_file)
+    next(calendar_reader)  # we must skip the first line as it has the header!
+    # read the weekday spread per service
+    service_dates, service_exclusions = {}, set()
+    for (service_id, monday, tuesday, wednesday, thursday, friday, saturday, sunday,
+         start_date, end_date) in calendar_reader:
+      # check if the schedule is current
+      start_date = datetime.datetime.strptime(start_date, '%Y%m%d')
+      end_date = datetime.datetime.strptime(end_date, '%Y%m%d')
+      if not start_date <= current_date <= end_date:
+        raise util.Error(
+            'Current date (%s) is outside dates in calendar.txt (%s to %s)! '
+            'You need to refresh Irish Rail data!' %
+            (current_date.strftime('%Y%m%d'),
+             start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')))
+      # generate all dates in period
+      period_dates = set(_AllDatesInPeriod(start_date, end_date)).union(
+          date_inclusions.get(service_id, set())) - date_exclusions.get(service_id, set())
+      if any(d not in period_dates for d in look_ahead_days):
+        logging.warning(
+            'Removing service_id %r because not all days in next %d are in this period',
+            service_id, _LOOK_AHEAD_IN_DAYS)
+        service_exclusions.add(service_id)
+      # convert all to bool
+      monday, tuesday, wednesday, thursday, friday, saturday, sunday = (
+          bool(int(monday)), bool(int(tuesday)), bool(int(wednesday)), bool(int(thursday)),
+          bool(int(friday)), bool(int(saturday)), bool(int(sunday)))
+      # figure out working day (Mon-Fri) schedule and irregular schedules
+      bool_working_days = monday and tuesday and wednesday and thursday and friday
+      bool_irregular = (
+          (not bool_working_days and not saturday and not sunday) or  # no useful cathegories found
+          (not bool_working_days and                                  # not all weekdays
+           any((monday, tuesday, wednesday, thursday, friday))))
+      service_dates[service_id] = (bool_working_days, saturday, sunday, bool_irregular)
+    return (service_dates, service_exclusions)
+
+
 def main(_):
   """Load Irish Rail data and convert timetables to useful data for some stops."""
   logging.info('START: IRISH RAIL TIMETABLE')
@@ -98,18 +174,47 @@ def main(_):
   interesting_stops = {stop_name: _StopIDsByName(stops, stop_name) for stop_name in _DESIRED_STOPS}
   interesting_stops_ids = {
       stop_id for stops_set in interesting_stops.values() for stop_id in stops_set}
+  # get the calendar
+  service_dates, service_exclusions = _LoadServiceDates()
   # load trips and timetables, filtered by the desired route
-  trips = _LoadTripsForRoute(desired_route_id)
+  trips = _LoadTripsForRoute(desired_route_id, service_exclusions)
   timetable = _LoadTimetableForTrips(set(trips.keys()))
   # print all the trips, sorted by start time, only for the interesting stops
   trip_starts = _GetTripStarts(trips, timetable)
-  for trip_start in sorted(trip_starts.keys()):
-    for trip_id in sorted(trip_starts[trip_start]):
-      print('TRIP %s @ %s' % (trip_id, trip_start.strftime('%H:%M')))
-      for int_stop_sequence, stop_id, arrival_time in timetable[trip_id]:
-        if stop_id in interesting_stops_ids:
-          print('    %d: %s @ %s' % (
-              int_stop_sequence, stops[stop_id], arrival_time.strftime('%H:%M')))
+  for int_direction_id in (1, 0):
+    for week_index, week_type in ((0, 'MON-FRI'), (1, 'SATURDAY'), (2, 'SUNDAY')):
+      print()
+      print('DIRECTION: %s' % _DIRECTION(int_direction_id))
+      print('WEEKDAY TYPE: %s' % week_type)
+      print()
+      trip_count = 0
+      for trip_start in sorted(trip_starts.keys()):
+        for trip_id in sorted(trip_starts[trip_start]):
+          # get service dates and filter by them
+          trip = trips[trip_id]
+          service_id = trip[0]
+          week_schedule = service_dates[service_id]
+          if _SKIP_ALL_IRREGULAR_SCHEDULES and week_schedule[3]:
+            logging.debug('Skipping trip %s because it has an irregular schedule', trip_id)
+            continue
+          if trip[1] == int_direction_id and week_schedule[week_index]:
+            # here we have a trip we may want to print, so go figure it out
+            trip_count += 1
+            if trip_count > 10:  # TODO: remove trip counter?
+              break
+            trip_timetable = timetable[trip_id]
+            from_station, to_station = trip_timetable[0][1], trip_timetable[-1][1]
+            filtered_stations = tuple(s for s in trip_timetable if s[1] in interesting_stops_ids)
+            if len(filtered_stations) >= 2:
+              # this trip has at least 2 stops from our list, so it is to be printed
+              print()
+              print('TRIP %s @ %s / %s+%s / From: %s To: %s' % (
+                  trip_id, trip_start.strftime('%H:%M'),
+                  _DIRECTION(int_direction_id), week_type,
+                  stops[from_station], stops[to_station]))
+              for int_stop_sequence, stop_id, arrival_time in filtered_stations:
+                print('    %d: %s @ %s' % (
+                    int_stop_sequence, stops[stop_id], arrival_time.strftime('%H:%M')))
   logging.info('DONE')
 
 

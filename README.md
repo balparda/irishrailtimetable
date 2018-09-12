@@ -20,6 +20,8 @@ useful to individual users of specific train stations. Focus on DART for now.
 
 Data comes from: https://data.gov.ie/dataset/gtfs-irish-rail
 
+Much more info in [`data/irish_rail/README.md`](data/irish_rail/README.md).
+
 Usage: TODO
 
 -Daniel
