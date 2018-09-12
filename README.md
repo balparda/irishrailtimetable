@@ -11,6 +11,7 @@ Just the basic:
 ```
 $ hg clone https://balparda@bitbucket.org/balparda/miscbalpardacode
 $ sudo apt-get install python-pip python-dev python3-pip python3-dev pylint pylint3
+$ sudo pip3 install -U prettytable
 ```
 
 # Irish Rail Timetable

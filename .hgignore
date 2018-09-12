@@ -1,6 +1,6 @@
 syntax: glob
 *.pyc
-*.h5
+*.csv
 .coverage
 htmlcov
 training_checkpoints*
