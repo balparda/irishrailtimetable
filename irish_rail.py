@@ -7,7 +7,7 @@
 import csv
 import datetime
 import logging
-import pdb
+# import pdb
 import sys
 
 import prettytable
@@ -230,7 +230,6 @@ def main(_):
   fake_stops = {stop_id: (fake_name, rel_min)
                 for fake_name, (rel_stop_name, rel_min) in _FAKE_STOPS.items()  # pylint: disable=not-an-iterable
                 for stop_id in _StopIDsByName(stops, rel_stop_name)}
-  pdb.set_trace()
   for fake_name, rel_min in fake_stops.values():
     interesting_stops[fake_name] = {fake_name}  # NOTE: for fake stops the ID and name are the same!
     stops[fake_name] = fake_name
