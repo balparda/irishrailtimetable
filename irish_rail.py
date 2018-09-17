@@ -20,7 +20,7 @@ __version__ = (1, 0)
 
 
 _DATA_DIR = 'data/irish_rail/'
-_DESIRED_ROUT_NAME = 'DART'
+_DESIRED_ROUT_NAMES = {'DART'}
 _ALTERNATE_DATE = None  # if given, like '20180101', will do the computation for that date
 # var below: the stops we want to look at. format is {stop_oficial_name: optional_stop_alias}
 # they don't have to be in any particular order and we go to great pains to make sure this all
@@ -81,10 +81,13 @@ def _LoadRoutes():  # like {route_id: route_long_name}
 
 
 def _RouteIDByName(routes, desired_route):
+  route_ids = set()
   for route_id, route_long_name in routes.items():
     if route_long_name == desired_route:
-      return route_id
-  raise util.Error('Route %r not found' % desired_route)
+      route_ids.add(route_id)
+  if not route_ids:
+    raise util.Error('Route %r not found' % desired_route)
+  return route_ids
 
 
 def _LoadStops():  # like {stop_id: stop_name}
@@ -104,14 +107,14 @@ def _StopIDsByName(stops, desired_stop_name):
   return stop_ids
 
 
-def _LoadTripsForRoute(desired_route_id, service_exclusions):
+def _LoadTripsForRoute(desired_route_ids, service_exclusions):
   # like {trip_id: (service_id, bool_direction_id)}
   with open(_DATA_DIR + 'trips.txt', 'rt', newline='') as csv_file:
     trips_reader = csv.reader(csv_file)
     next(trips_reader)  # we must skip the first line as it has the header!
     return {trip_id: (service_id, bool(int(direction_id)))
             for route_id, service_id, trip_id, _, _, direction_id in trips_reader
-            if route_id == desired_route_id and service_id not in service_exclusions}
+            if route_id in desired_route_ids and service_id not in service_exclusions}
 
 
 def _LoadTimetableForTrips(desired_trips):
@@ -205,7 +208,7 @@ def _LoadServiceDates():
 
 
 def _WriteCSVs(output_tables):
-  route_path = _DESIRED_ROUT_NAME.replace(' ', '_').replace('/', '_')
+  route_path = ('_'.join(_DESIRED_ROUT_NAMES)).replace(' ', '_').replace('/', '_')
   for bool_direction_id in sorted(output_tables):
     trips_table = output_tables[bool_direction_id]
     output_path = '%s_%s_%s.csv' % (route_path, _DIRECTION(bool_direction_id), _TODAYS_DATE_REPR)
@@ -223,7 +226,7 @@ def _PrintTables(output_tables):
     for row in trips_table[1:]:
       pt_obj.add_row(row)
     print()
-    print('%s %s table' % (_DESIRED_ROUT_NAME, _DIRECTION(bool_direction_id)))
+    print('%s %s table' % ('/'.join(_DESIRED_ROUT_NAMES), _DIRECTION(bool_direction_id)))
     print()
     print(pt_obj)
     print()
@@ -234,7 +237,9 @@ def main(_):
   logging.info('START: IRISH RAIL TIMETABLE (for day %s)', _TODAYS_DATE_REPR)
   # get routes and find the one we're looking at now
   routes = _LoadRoutes()
-  desired_route_id = _RouteIDByName(routes, _DESIRED_ROUT_NAME)
+  desired_route_ids = set()
+  for route_name in _DESIRED_ROUT_NAMES:
+    desired_route_ids.update(_RouteIDByName(routes, route_name))
   # get stops and find the interesting ones; note one stop name can translate to multiple IDs
   stops_names = _LoadStops()
   station_aliases = {
@@ -264,7 +269,7 @@ def main(_):
   service_dates, service_exclusions = _LoadServiceDates()
   # load trips and timetables, filtered by the desired route
   # TODO: include feature to allow multiple desired routes so user can look at more complete data
-  trips = _LoadTripsForRoute(desired_route_id, service_exclusions)
+  trips = _LoadTripsForRoute(desired_route_ids, service_exclusions)
   timetable = _LoadTimetableForTrips(set(trips))
   # get all the trips, sorted by start time, only for the interesting stops
   trip_starts = _GetTripStarts(trips, timetable)
