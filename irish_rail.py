@@ -6,6 +6,7 @@
 
 import csv
 import datetime
+import itertools
 import logging
 # import pdb
 import sys
@@ -20,7 +21,14 @@ __version__ = (1, 0)
 
 _DATA_DIR = 'data/irish_rail/'
 _DESIRED_ROUT_NAME = 'DART'
-_DESIRED_STOPS = {'Howth Junction and Donaghmede', 'Tara St', 'Grand Canal Dock'}
+# var below: the stops we want to look at. format is {stop_oficial_name: optional_stop_alias}
+# they don't have to be in any particular order and we go to great pains to make sure this all
+# works for any order
+_DESIRED_STOPS = {
+    'Howth Junction and Donaghmede': 'Howth Junction',
+    'Tara St': None,
+    'Grand Canal Dock': 'Grand Canal',
+}
 # var below: if True will skip *all* irregular schedules even if they serve some days that could
 # be listed; example would be a trip schedule that serves Mon & Sat as it is irregular but
 # could be listed on Sat's schedule even if not listed as a working day; there are a lot of
@@ -39,6 +47,10 @@ _PRINT_OUTPUT = True
 _FAKE_STOPS = {
     'Home': ('Howth Junction and Donaghmede', 24),  # 24 minutes "North" of Howth Junction
     'Google Desk': ('Grand Canal Dock', -9),        # 9 minutes "South" of Grand Canal
+}
+# var below: {stop_oficial_name: optional_stop_alias} for any station not in _DESIRED_STOPS
+_STATION_ALIASES = {
+    'Bray Daly': 'Bray',
 }
 
 # some util consts and lambdas
@@ -119,7 +131,7 @@ def _LoadTimetableForTrips(desired_trips):
 
 def _GetTripStarts(trips, timetable):  # like {start_time: {trip_id_1, trip_id_2, ...}}
   trip_starts = {}
-  for trip_id in trips.keys():
+  for trip_id in trips:
     start_time = timetable[trip_id][0][2]
     trip_starts.setdefault(start_time, set()).add(trip_id)
   return trip_starts
@@ -191,7 +203,7 @@ def _LoadServiceDates():
 
 def _WriteCSVs(output_tables):
   route_path = _DESIRED_ROUT_NAME.replace(' ', '_').replace('/', '_')
-  for bool_direction_id in sorted(output_tables.keys()):
+  for bool_direction_id in sorted(output_tables):
     trips_table = output_tables[bool_direction_id]
     output_path = '%s_%s_%s.csv' % (route_path, _DIRECTION(bool_direction_id), _TODAYS_DATE_REPR)
     logging.info('Saving %r', output_path)
@@ -202,7 +214,7 @@ def _WriteCSVs(output_tables):
 
 
 def _PrintTables(output_tables):
-  for bool_direction_id in sorted(output_tables.keys()):
+  for bool_direction_id in sorted(output_tables):
     trips_table = output_tables[bool_direction_id]
     pt_obj = prettytable.PrettyTable(trips_table[0])
     for row in trips_table[1:]:
@@ -221,18 +233,25 @@ def main(_):
   routes = _LoadRoutes()
   desired_route_id = _RouteIDByName(routes, _DESIRED_ROUT_NAME)
   # get stops and find the interesting ones; note one stop name can translate to multiple IDs
-  stops = _LoadStops()
-  interesting_stops = {stop_name: _StopIDsByName(stops, stop_name) for stop_name in _DESIRED_STOPS}
+  stops_names = _LoadStops()
+  station_aliases = {
+      stop_id: stop_alias
+      for stop_name, stop_alias in itertools.chain(_DESIRED_STOPS.items(), _STATION_ALIASES.items())
+      for stop_id in _StopIDsByName(stops_names, stop_name)
+      if stop_alias}
+  translate_stop_name = lambda stop_id: station_aliases.get(stop_id, None) or stops_names[stop_id]
+  interesting_stops = {
+      stop_name: _StopIDsByName(stops_names, stop_name) for stop_name in _DESIRED_STOPS}
   desired_stops_count = len(_DESIRED_STOPS)
   interesting_stops_ids = {
       stop_id for stops_set in interesting_stops.values() for stop_id in stops_set}
   # add "fake stops" and then monkey-patch the fake stops into the structures above
   fake_stops = {stop_id: (fake_name, rel_min)
                 for fake_name, (rel_stop_name, rel_min) in _FAKE_STOPS.items()  # pylint: disable=not-an-iterable
-                for stop_id in _StopIDsByName(stops, rel_stop_name)}
+                for stop_id in _StopIDsByName(stops_names, rel_stop_name)}
   for fake_name, rel_min in fake_stops.values():
     interesting_stops[fake_name] = {fake_name}  # NOTE: for fake stops the ID and name are the same!
-    stops[fake_name] = fake_name
+    stops_names[fake_name] = fake_name
     interesting_stops_ids.add(fake_name)
     if not rel_min:
       raise util.Error(
@@ -243,7 +262,7 @@ def main(_):
   # load trips and timetables, filtered by the desired route
   # TODO: include feature to allow multiple desired routes so user can look at more complete data
   trips = _LoadTripsForRoute(desired_route_id, service_exclusions)
-  timetable = _LoadTimetableForTrips(set(trips.keys()))
+  timetable = _LoadTimetableForTrips(set(trips))
   # get all the trips, sorted by start time, only for the interesting stops
   trip_starts = _GetTripStarts(trips, timetable)
   # now we calculate the data to be output, which is like:
@@ -252,10 +271,10 @@ def main(_):
   #        'start': (stop_id, arrival_time), 'end': (stop_id, arrival_time),
   #        'stops': [(stop_id, arrival_time), ...more stops...]}, ...more trips...]}
   output_dict = {False: [], True: []}
-  for bool_direction_id in sorted(output_dict.keys()):
+  for bool_direction_id in sorted(output_dict):
     trips_table = output_dict[bool_direction_id]
-    for week_index in sorted(_WEEK_TYPE.keys()):
-      for trip_start in sorted(trip_starts.keys()):
+    for week_index in sorted(_WEEK_TYPE):
+      for trip_start in sorted(trip_starts):
         for trip_id in sorted(trip_starts[trip_start]):
           # get service dates and filter by them
           trip = trips[trip_id]
@@ -291,7 +310,7 @@ def main(_):
   # first we have to find out the order of the stations for each direction and make sure this
   # is consistent across all data, by checking them and adding None values in the missing ones
   stop_ordering = {}  # like {bool_direction_id: (stop1, stop2, ...)}
-  for bool_direction_id in sorted(output_dict.keys()):
+  for bool_direction_id in sorted(output_dict):
     trips_table = output_dict[bool_direction_id]
     # find first trip who's stop list has all the desired stops to use as a template
     for trip in trips_table:
@@ -318,24 +337,24 @@ def main(_):
   # now we can build the actual output tables
   # TODO: sort by time on the first desired stop in the current direction
   output_tables = {False: [], True: []}
-  for bool_direction_id in sorted(output_tables.keys()):
+  for bool_direction_id in sorted(output_tables):
     trips_table = output_tables[bool_direction_id]
     trips_dict_table = output_dict[bool_direction_id]
     # put the header in as the first line
     header = ['Trip ID', 'Days', 'Origin']
     for stop_id in stop_ordering[bool_direction_id]:
-      header.append(stops[stop_id])
+      header.append(translate_stop_name(stop_id))
     header.append('Destination')
     trips_table.append(tuple(header))
     # add trips data
     for trip in trips_dict_table:
-      row = [trip['id'], _WEEK_TYPE[trip['week']], stops[trip['start'][0]]]
+      row = [trip['id'], _WEEK_TYPE[trip['week']], translate_stop_name(trip['start'][0])]
       # add stops data
       for stop_n, (stop_id, arrival_time) in enumerate(trip['stops']):
         if stop_id != stop_ordering[bool_direction_id][stop_n]:
           raise util.Error('Inconsistency found in trip %s' % trip['id'])  # should not happen!
         row.append('X' if arrival_time is None else arrival_time.strftime('%H:%M'))
-      row.append(stops[trip['end'][0]])
+      row.append(translate_stop_name(trip['end'][0]))
       trips_table.append(tuple(row))
   # finally, we save the data to CSV, print it, or both
   if _WRITE_CSV:
