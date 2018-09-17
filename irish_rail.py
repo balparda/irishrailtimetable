@@ -6,6 +6,7 @@
 
 import csv
 import datetime
+import functools
 import itertools
 import logging
 # import pdb
@@ -207,6 +208,21 @@ def _LoadServiceDates():
     return (service_dates, service_exclusions)
 
 
+def _CmpStopsByFirstAvailableTime(a, b):
+  # first we compare by 'week' type
+  if a['week'] != b['week']:
+    return 1 if a['week'] > b['week'] else -1
+  # then we compare by stop times
+  for i, (_, time_a) in enumerate(a['stops']):
+    time_b = b['stops'][i][1]
+    # skip the None times and the ones that are equal
+    if time_a and time_b and time_a != time_b:
+      # this is the one to compare by
+      return 1 if time_a > time_b else -1
+  # they were all missing or equal (happens: a and b can be the same)
+  return 0
+
+
 def _WriteCSVs(output_tables):
   route_path = ('_'.join(_DESIRED_ROUT_NAMES)).replace(' ', '_').replace('/', '_')
   for bool_direction_id in sorted(output_tables):
@@ -271,7 +287,7 @@ def main(_):
   # TODO: include feature to allow multiple desired routes so user can look at more complete data
   trips = _LoadTripsForRoute(desired_route_ids, service_exclusions)
   timetable = _LoadTimetableForTrips(set(trips))
-  # get all the trips, sorted by start time, only for the interesting stops
+  # get all the trips (but only for the interesting stops)
   trip_starts = _GetTripStarts(trips, timetable)
   # now we calculate the data to be output, which is like:
   #   {bool_direction_id: [
@@ -283,7 +299,7 @@ def main(_):
     trips_table = output_dict[bool_direction_id]
     for week_index in sorted(_WEEK_TYPE):
       for trip_start in sorted(trip_starts):
-        for trip_id in sorted(trip_starts[trip_start]):
+        for trip_id in sorted(trip_starts[trip_start]):  # we sort by trip start
           # get service dates and filter by them
           trip = trips[trip_id]
           service_id = trip[0]
@@ -342,8 +358,9 @@ def main(_):
       # that is larger than desired_stops_count
       if len(trip_stops) > desired_stops_count:
         raise util.Error('Found trip with iverted directionality: %s' % trip_id)
+    # now we can re-sort so we have the first available stop
+    trips_table.sort(key=functools.cmp_to_key(_CmpStopsByFirstAvailableTime))
   # now we can build the actual output tables
-  # TODO: sort by time on the first desired stop in the current direction
   output_tables = {False: [], True: []}
   for bool_direction_id in sorted(output_tables):
     trips_table = output_tables[bool_direction_id]
