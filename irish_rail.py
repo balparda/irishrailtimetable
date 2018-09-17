@@ -21,6 +21,7 @@ __version__ = (1, 0)
 
 _DATA_DIR = 'data/irish_rail/'
 _DESIRED_ROUT_NAME = 'DART'
+_ALTERNATE_DATE = None  # if given, like '20180101', will do the computation for that date
 # var below: the stops we want to look at. format is {stop_oficial_name: optional_stop_alias}
 # they don't have to be in any particular order and we go to great pains to make sure this all
 # works for any order
@@ -35,6 +36,7 @@ _DESIRED_STOPS = {
 # trips like this (that serve Sat or Sun but are irregular on weekdays)
 _SKIP_ALL_IRREGULAR_SCHEDULES = True
 # var below: controls output media
+_ADD_TRIP_ID_COLUMN = False
 _WRITE_CSV = True
 _PRINT_OUTPUT = True
 # TODO: make these options into an actual command line
@@ -60,8 +62,9 @@ _WEEK_TYPE = {
     1: 'Saturday',
     2: 'Sunday',
 }
-_TODAYS_DATE = datetime.date.today()
 _DATE_REPR = '%Y%m%d'
+_TODAYS_DATE = (datetime.date.today() if _ALTERNATE_DATE is None else
+                datetime.datetime.strptime(_ALTERNATE_DATE, _DATE_REPR).date())
 _TODAYS_DATE_REPR = _TODAYS_DATE.strftime(_DATE_REPR)
 _TODAYS_DATETIME = datetime.datetime.combine(_TODAYS_DATE, datetime.time(hour=0))
 _ONE_DAY = datetime.timedelta(days=1)
@@ -228,7 +231,7 @@ def _PrintTables(output_tables):
 
 def main(_):
   """Load Irish Rail data and convert timetables to useful data for some stops."""
-  logging.info('START: IRISH RAIL TIMETABLE')
+  logging.info('START: IRISH RAIL TIMETABLE (for day %s)', _TODAYS_DATE_REPR)
   # get routes and find the one we're looking at now
   routes = _LoadRoutes()
   desired_route_id = _RouteIDByName(routes, _DESIRED_ROUT_NAME)
@@ -341,14 +344,16 @@ def main(_):
     trips_table = output_tables[bool_direction_id]
     trips_dict_table = output_dict[bool_direction_id]
     # put the header in as the first line
-    header = ['Trip ID', 'Days', 'Origin']
+    header = ['Trip ID', 'Days', 'Origin'] if _ADD_TRIP_ID_COLUMN else ['Days', 'Origin']
     for stop_id in stop_ordering[bool_direction_id]:
       header.append(translate_stop_name(stop_id))
     header.append('Destination')
     trips_table.append(tuple(header))
     # add trips data
     for trip in trips_dict_table:
-      row = [trip['id'], _WEEK_TYPE[trip['week']], translate_stop_name(trip['start'][0])]
+      row = [trip['id']] if _ADD_TRIP_ID_COLUMN else []
+      row.append(_WEEK_TYPE[trip['week']])
+      row.append(translate_stop_name(trip['start'][0]))
       # add stops data
       for stop_n, (stop_id, arrival_time) in enumerate(trip['stops']):
         if stop_id != stop_ordering[bool_direction_id][stop_n]:
