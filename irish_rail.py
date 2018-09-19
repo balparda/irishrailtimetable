@@ -7,7 +7,6 @@
 import csv
 import datetime
 import functools
-import itertools
 import logging
 # import pdb
 
@@ -25,43 +24,9 @@ __version__ = (1, 0)
 
 # log format string
 LOG_FORMAT = '%(asctime)-15s: %(module)s/%(funcName)s/%(lineno)d: %(message)s'
-logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)  # set this as default
 
+# rail data dir
 _DATA_DIR = 'data/irish_rail/'
-_DESIRED_ROUT_NAMES = {'DART'}
-_ALTERNATE_DATE = None  # if given, like '20180101', will do the computation for that date
-# var below: the stops we want to look at. format is {stop_oficial_name: optional_stop_alias}
-# they don't have to be in any particular order and we go to great pains to make sure this all
-# works for any order
-_DESIRED_STOPS = {
-    'Howth Junction and Donaghmede': 'Howth Junction',
-    'Tara St': None,
-    'Grand Canal Dock': 'Grand Canal',
-}
-# var below: if True will skip *all* irregular schedules even if they serve some days that could
-# be listed; example would be a trip schedule that serves Mon & Sat as it is irregular but
-# could be listed on Sat's schedule even if not listed as a working day; there are a lot of
-# trips like this (that serve Sat or Sun but are irregular on weekdays)
-_SKIP_ALL_IRREGULAR_SCHEDULES = True
-# var below: controls output media
-_ADD_TRIP_ID_COLUMN = False
-_WRITE_CSV = True
-_PRINT_OUTPUT = True
-# TODO: make these options into an actual command line
-# var below: controls extra "fake" stops you want added, and the format is
-# {display_name: (relative_to_station, number_of_minutes_before_or_after)}
-# the display_name station will be added to the output table, relative to a station
-# before or after it with a certain delta in minutes; this delta is counted towards
-# the bool_direction_id==False direction of the data table (on the DART service this
-# means the NORTH directon)
-_FAKE_STOPS = {
-    'Home': ('Howth Junction and Donaghmede', 24),  # 24 minutes "North" of Howth Junction
-    'Google Desk': ('Grand Canal Dock', -9),        # 9 minutes "South" of Grand Canal
-}
-# var below: {stop_oficial_name: optional_stop_alias} for any station not in _DESIRED_STOPS
-_STATION_ALIASES = {
-    'Bray Daly': 'Bray',
-}
 
 # some util consts and lambdas
 _DIRECTION = lambda bool_direction_id: 'SOUTH' if bool_direction_id else 'NORTH'
@@ -71,14 +36,8 @@ _WEEK_TYPE = {
     2: 'Sunday',
 }
 _DATE_REPR = '%Y%m%d'
-_TODAYS_DATE = (datetime.date.today() if _ALTERNATE_DATE is None else
-                datetime.datetime.strptime(_ALTERNATE_DATE, _DATE_REPR).date())
-_TODAYS_DATE_REPR = _TODAYS_DATE.strftime(_DATE_REPR)
-_TODAYS_DATETIME = datetime.datetime.combine(_TODAYS_DATE, datetime.time(hour=0))
-_ONE_DAY = datetime.timedelta(days=1)
 _LOOK_AHEAD_IN_DAYS = 14
-_ADD_MINUTES_TO_TIME = lambda t, m: (datetime.datetime.combine(_TODAYS_DATE, t) +
-                                     datetime.timedelta(minutes=m)).time()
+_ONE_DAY = datetime.timedelta(days=1)
 
 
 class Error(Exception):
@@ -95,7 +54,7 @@ def _LoadRoutes():  # like {route_id: route_long_name}
 def _RouteIDByName(routes, desired_route):
   route_ids = set()
   for route_id, route_long_name in routes.items():
-    if route_long_name == desired_route:
+    if route_long_name.lower() == desired_route.lower():  # make route search case insensitive
       route_ids.add(route_id)
   if not route_ids:
     raise Error('Route %r not found' % desired_route)
@@ -112,7 +71,7 @@ def _LoadStops():  # like {stop_id: stop_name}
 def _StopIDsByName(stops, desired_stop_name):
   stop_ids = set()
   for stop_id, stop_name in stops.items():
-    if stop_name == desired_stop_name:
+    if stop_name.lower() == desired_stop_name.lower():  # make stop search case insensitive
       stop_ids.add(stop_id)
   if not stop_ids:
     raise Error('Stop %r not found' % desired_stop_name)
@@ -162,7 +121,7 @@ def _AllDatesInPeriod(initial_date, final_date):
     dt += _ONE_DAY
 
 
-def _LoadServiceDates():
+def _LoadServiceDates(timetable_datetime):
   # like {service_id: (bool_working_days, bool_saturday, bool_sunday, bool_irregular)}
   # service_exclusions like {service_id1, service_id2, ...}
   # start by reading and storing all the exclusion dates for all services
@@ -180,7 +139,7 @@ def _LoadServiceDates():
         raise Error('Unexpected exception_type in calendar_dates.txt!')
   # determine next _LOOK_AHEAD_IN_DAYS of schedule days to use in filtering services
   look_ahead_days = set(_AllDatesInPeriod(
-      _TODAYS_DATETIME, _TODAYS_DATETIME + datetime.timedelta(days=_LOOK_AHEAD_IN_DAYS)))
+      timetable_datetime, timetable_datetime + datetime.timedelta(days=_LOOK_AHEAD_IN_DAYS)))
   # now read calendar to get all services and determine exclusions
   with open(_DATA_DIR + 'calendar.txt', 'rt', newline='') as csv_file:
     calendar_reader = csv.reader(csv_file)
@@ -192,11 +151,12 @@ def _LoadServiceDates():
       # check if the schedule is current
       start_date = datetime.datetime.strptime(start_date, _DATE_REPR)
       end_date = datetime.datetime.strptime(end_date, _DATE_REPR)
-      if not start_date <= _TODAYS_DATETIME <= end_date:
+      if not start_date <= timetable_datetime <= end_date:
         raise Error(
             'Current date (%s) is outside dates in calendar.txt (%s to %s)! '
             'You need to refresh Irish Rail data!' %
-            (_TODAYS_DATE_REPR, start_date.strftime(_DATE_REPR), end_date.strftime(_DATE_REPR)))
+            (timetable_datetime.strftime(_DATE_REPR),
+             start_date.strftime(_DATE_REPR), end_date.strftime(_DATE_REPR)))
       # generate all dates in period
       period_dates = set(_AllDatesInPeriod(start_date, end_date)).union(
           date_inclusions.get(service_id, set())) - date_exclusions.get(service_id, set())
@@ -234,11 +194,12 @@ def _CmpStopsByFirstAvailableTime(a, b):
   return 0
 
 
-def _WriteCSVs(output_tables):
-  route_path = ('_'.join(_DESIRED_ROUT_NAMES)).replace(' ', '_').replace('/', '_')
+def _WriteCSVs(desired_rout_names, timetable_date_to_use, output_tables):
+  route_path = ('_'.join(desired_rout_names)).replace(' ', '_').replace('/', '_')
   for bool_direction_id in sorted(output_tables):
     trips_table = output_tables[bool_direction_id]
-    output_path = '%s_%s_%s.csv' % (route_path, _DIRECTION(bool_direction_id), _TODAYS_DATE_REPR)
+    output_path = '%s_%s_%s.csv' % (
+        route_path, _DIRECTION(bool_direction_id), timetable_date_to_use.strftime(_DATE_REPR))
     logging.info('Saving %r', output_path)
     with open(output_path, 'wt', newline='') as csv_file:
       route_writer = csv.writer(csv_file, quoting=csv.QUOTE_MINIMAL)
@@ -246,7 +207,7 @@ def _WriteCSVs(output_tables):
         route_writer.writerow(row)
 
 
-def _PrintTables(output_tables):
+def _PrintTables(desired_rout_names, output_tables):
   if not _HAS_PRETTYTABLE:
     logging.error('prettytable module is necessary for text table printing. '
                   'Run `pip3 install -U --user prettytable`')
@@ -257,37 +218,121 @@ def _PrintTables(output_tables):
     for row in trips_table[1:]:
       pt_obj.add_row(row)
     click.echo()
-    click.echo('%s %s table' % ('/'.join(_DESIRED_ROUT_NAMES), _DIRECTION(bool_direction_id)))
+    click.echo('%s %s table' % ('/'.join(desired_rout_names), _DIRECTION(bool_direction_id)))
     click.echo()
     click.echo(pt_obj)
     click.echo()
 
 
 @click.command()
-def tables():
-  """Load Irish Rail data and convert timetables to useful data for some stops."""
-  logging.info('START: IRISH RAIL TIMETABLE (for day %s)', _TODAYS_DATE_REPR)
+# see `click` module usage in:
+#   http://click.pocoo.org/5/quickstart/
+#   http://click.pocoo.org/5/options/
+#   http://click.pocoo.org/5/documentation/#help-texts
+@click.option(
+    '--route', '-r', type=click.STRING, multiple=True,
+    help='Case-insensitive Irish Rail route/service name (ex: "DART"); '
+    'can be given more than once for multiple routes/services.')
+@click.option(
+    '--stop', '-s', type=click.STRING, multiple=True,
+    help='Case-insensitive Irish Rail stop name to include in output (ex: "Grand Canal Dock"); '
+    'can be given more than once for multiple stops.')
+@click.option(
+    '--alias', '-a', type=(click.STRING, click.STRING), multiple=True,
+    help='Station alias as 2 strings, the first is the Irish Rail name and the second is '
+    'the alias (ex: -a "Bray Daly" "Bray"); can be given more than once.')
+@click.option(
+    '--fake', '-f', type=(click.STRING, click.STRING, click.INT), multiple=True,
+    help='Fake (inserted) station to display in output as 2 strings and an int delta in number '
+    'of minutes before or after; the first string is the alias for the fake station, the second '
+    'string is the Irish Rail station to count the delta from, and the integer is the delta, '
+    'in whole minutes (ex: -f "Home" "Bray Daly" -10, meaning "Home" is 10 min south of Bray); '
+    'this delta is counted towards the bool_direction_id==False direction of the data table '
+    '(on the DART service this means the NORTH directon).')
+@click.option(
+    '--print-out/--no-print-out', default=True,
+    help='Print to screen? Default is yes (--print-out).')
+@click.option(
+    '--csv-out/--no-csv-out', default=False,
+    help='Save CSV file? Default is no (--no-csv-out).')
+@click.option(
+    '--idcol/--no-idcol', default=False,
+    help='Add Irish Rail trip ID column to output? Default is no (--no-idcol).')
+@click.option(
+    '--date', '-d', type=click.STRING, default='',
+    help='If given, the date that will be used for producing timetables; '
+    'Format has to be YYYYMMDD; If not given, current date will be used.')
+@click.option(
+    '--irregular/--no-irregular', default=False,
+    help='Dangerous; Allow for irregular schedules; By default (--no-irregular) will skip all '
+    'irregular schedules even if they serve some days that could be listed; an example would be a '
+    'trip schedule that serves Mon & Sat but not other weekdays: it is irregular but could be '
+    'listed on Sat\'s schedule even if not listed as a working day.')
+@click.option(
+    '--max-trips', type=click.IntRange(0, 50000, clamp=True), default=0,
+    help='Dangerous; If given, will limit the number of trips (rows) in the output, for debugging.')
+@click.option(
+    '--verbose', '-v', count=True,
+    help='Verbose level; default is errors only; -v includes info/warning; -vv includes debug.')
+def tables(
+    route, stop, alias, fake, print_out, csv_out, idcol, date, irregular, max_trips, verbose):
+  """Load Irish Rail route data and output custom timetables. Typical examples:
+
+  \b
+  ./irish_rail.py --csv-out --route DART \\
+      --stop "Howth Junction and Donaghmede" \\
+      --stop "Tara St" \\
+      --stop "Grand Canal Dock" \\
+      --alias "Bray Daly" "Bray" \\
+      --alias "Howth Junction and Donaghmede" "Howth Junction" \\
+      --alias "Grand Canal Dock" "Grand Canal" \\
+      --fake "Home" "Howth Junction and Donaghmede" 24 \\
+      --fake "Work Desk" "Grand Canal Dock" -9
+  """
+  # set logging level
+  logging.basicConfig(
+    level={0: logging.ERROR, 1: logging.INFO, 2: logging.DEBUG}[verbose if verbose <= 2 else 2],
+    format=LOG_FORMAT)
+  # process flags and give some initial messages
+  # TODO: more thorough processing AND LOGGING of flags here
+  if not print_out and not csv_out:
+    click.echo('With --no-print-out and --no-csv-out there is nothing to do!')
+    return
+  stop = {s.strip() for s in stop if s.strip()}
+  if len(stop) < 2:
+    click.echo('With less than 2x --stop there is nothing to do!')
+    return
+  alias = {s.strip(): a.strip() for s, a in alias if s.strip()}
+  fake = {a.strip(): (s.strip(), d) for a, s, d in fake if s.strip()}
+  # compute date and some date utils
+  date = date.strip()
+  timetable_date_to_use = (datetime.datetime.strptime(date, _DATE_REPR).date() if date else
+                           datetime.date.today())
+  timetable_date_repr = timetable_date_to_use.strftime(_DATE_REPR)
+  timetable_datetime = datetime.datetime.combine(timetable_date_to_use, datetime.time(hour=0))
+  add_minutes_to_time = lambda t, m: (datetime.datetime.combine(timetable_date_to_use, t) +
+                                      datetime.timedelta(minutes=m)).time()
+  logging.info('START: IRISH RAIL TIMETABLE (for day %s)', timetable_date_repr)
   # get routes and find the one we're looking at now
   routes = _LoadRoutes()
-  desired_route_ids = set()
-  for route_name in _DESIRED_ROUT_NAMES:
+  desired_rout_names, desired_route_ids = set(route), set()
+  for route_name in desired_rout_names:
     desired_route_ids.update(_RouteIDByName(routes, route_name))
   # get stops and find the interesting ones; note one stop name can translate to multiple IDs
   stops_names = _LoadStops()
   station_aliases = {
       stop_id: stop_alias
-      for stop_name, stop_alias in itertools.chain(_DESIRED_STOPS.items(), _STATION_ALIASES.items())
-      for stop_id in _StopIDsByName(stops_names, stop_name)
-      if stop_alias}
+      for stop_name, stop_alias in alias.items()
+      for stop_id in _StopIDsByName(stops_names, stop_name) if stop_alias}
   translate_stop_name = lambda stop_id: station_aliases.get(stop_id, None) or stops_names[stop_id]
   interesting_stops = {
-      stop_name: _StopIDsByName(stops_names, stop_name) for stop_name in _DESIRED_STOPS}
-  desired_stops_count = len(_DESIRED_STOPS)
+      stop_name: _StopIDsByName(stops_names, stop_name) for stop_name in stop}
+  desired_stops_count = len(stop)
   interesting_stops_ids = {
       stop_id for stops_set in interesting_stops.values() for stop_id in stops_set}
   # add "fake stops" and then monkey-patch the fake stops into the structures above
   fake_stops = {stop_id: (fake_name, rel_min)
-                for fake_name, (rel_stop_name, rel_min) in _FAKE_STOPS.items()  # pylint: disable=not-an-iterable
+                for fake_name, (rel_stop_name, rel_min) in fake.items()  # pylint: disable=not-an-iterable
                 for stop_id in _StopIDsByName(stops_names, rel_stop_name)}
   for fake_name, rel_min in fake_stops.values():
     interesting_stops[fake_name] = {fake_name}  # NOTE: for fake stops the ID and name are the same!
@@ -296,9 +341,9 @@ def tables():
     if not rel_min:
       raise Error(
           'Fake stations cannot have zero delay from an actual station (on %r)' % fake_name)
-  desired_stops_count += len(_FAKE_STOPS)
+  desired_stops_count += len(fake)
   # get the calendar
-  service_dates, service_exclusions = _LoadServiceDates()
+  service_dates, service_exclusions = _LoadServiceDates(timetable_datetime)
   # load trips and timetables, filtered by the desired route
   # TODO: include feature to allow multiple desired routes so user can look at more complete data
   trips = _LoadTripsForRoute(desired_route_ids, service_exclusions)
@@ -320,7 +365,7 @@ def tables():
           trip = trips[trip_id]
           service_id = trip[0]
           week_schedule = service_dates[service_id]
-          if _SKIP_ALL_IRREGULAR_SCHEDULES and week_schedule[3]:
+          if not irregular and week_schedule[3]:
             logging.debug('Skipping trip %s because it has an irregular schedule', trip_id)
             continue
           if trip[1] == bool_direction_id and week_schedule[week_index]:
@@ -338,11 +383,11 @@ def tables():
                 fake_name, rel_min = fake_stops.get(stop_id, (None, None))
                 if fake_name is not None and (bool_direction_id == (rel_min > 0)):
                   # fake stop before master
-                  trip_stops.append((fake_name, _ADD_MINUTES_TO_TIME(arrival_time, -abs(rel_min))))
+                  trip_stops.append((fake_name, add_minutes_to_time(arrival_time, -abs(rel_min))))
                 trip_stops.append((stop_id, arrival_time))  # master stop
                 if fake_name is not None and (bool_direction_id != (rel_min > 0)):
                   # fake stop after master
-                  trip_stops.append((fake_name, _ADD_MINUTES_TO_TIME(arrival_time, abs(rel_min))))
+                  trip_stops.append((fake_name, add_minutes_to_time(arrival_time, abs(rel_min))))
               trips_table.append({
                   'id': trip_id, 'week': week_index,
                   'start': from_station[1:], 'end': to_station[1:], 'stops': trip_stops})
@@ -382,14 +427,19 @@ def tables():
     trips_table = output_tables[bool_direction_id]
     trips_dict_table = output_dict[bool_direction_id]
     # put the header in as the first line
-    header = ['Trip ID', 'Days', 'Origin'] if _ADD_TRIP_ID_COLUMN else ['Days', 'Origin']
+    header = ['Trip ID', 'Days', 'Origin'] if idcol else ['Days', 'Origin']
     for stop_id in stop_ordering[bool_direction_id]:
       header.append(translate_stop_name(stop_id))
     header.append('Destination')
     trips_table.append(tuple(header))
     # add trips data
-    for trip in trips_dict_table:
-      row = [trip['id']] if _ADD_TRIP_ID_COLUMN else []
+    for output_trips_count, trip in enumerate(trips_dict_table):
+      # check for row cap
+      if max_trips and output_trips_count >= max_trips:
+        logging.warning('Trips count was capped at %d, but there were more.', max_trips)
+        break
+      # add type and start
+      row = [trip['id']] if idcol else []
       row.append(_WEEK_TYPE[trip['week']])
       row.append(translate_stop_name(trip['start'][0]))
       # add stops data
@@ -397,16 +447,18 @@ def tables():
         if stop_id != stop_ordering[bool_direction_id][stop_n]:
           raise Error('Inconsistency found in trip %s' % trip['id'])  # should not happen!
         row.append('X' if arrival_time is None else arrival_time.strftime('%H:%M'))
+      # add end data
       row.append(translate_stop_name(trip['end'][0]))
+      # put row in
       trips_table.append(tuple(row))
   # finally, we save the data to CSV, print it, or both
-  if _WRITE_CSV:
-    _WriteCSVs(output_tables)
-  if _PRINT_OUTPUT:
-    _PrintTables(output_tables)
+  if csv_out:
+    _WriteCSVs(desired_rout_names, timetable_date_to_use, output_tables)
+  if print_out:
+    _PrintTables(desired_rout_names, output_tables)
   logging.info('DONE')
 
 
 # only execute main() if used directly --- not sure how robust this is...
 if __name__ == '__main__':
-  tables()
+  tables()  # pylint: disable=no-value-for-parameter
