@@ -10,15 +10,22 @@ import functools
 import itertools
 import logging
 # import pdb
-import sys
 
-import prettytable
-
-from miscbalpardacode import util
+import click
+# TODO: http://click.pocoo.org/5/setuptools/#setuptools-integration
+try:
+  import prettytable
+  _HAS_PRETTYTABLE = True
+except ImportError:
+  _HAS_PRETTYTABLE = False
 
 __author__ = 'balparda@gmail.com (Daniel Balparda)'
 __version__ = (1, 0)
 
+
+# log format string
+LOG_FORMAT = '%(asctime)-15s: %(module)s/%(funcName)s/%(lineno)d: %(message)s'
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)  # set this as default
 
 _DATA_DIR = 'data/irish_rail/'
 _DESIRED_ROUT_NAMES = {'DART'}
@@ -74,6 +81,10 @@ _ADD_MINUTES_TO_TIME = lambda t, m: (datetime.datetime.combine(_TODAYS_DATE, t) 
                                      datetime.timedelta(minutes=m)).time()
 
 
+class Error(Exception):
+  """Irish Rail base exception."""
+
+
 def _LoadRoutes():  # like {route_id: route_long_name}
   with open(_DATA_DIR + 'routes.txt', 'rt', newline='') as csv_file:
     routes_reader = csv.reader(csv_file)
@@ -87,7 +98,7 @@ def _RouteIDByName(routes, desired_route):
     if route_long_name == desired_route:
       route_ids.add(route_id)
   if not route_ids:
-    raise util.Error('Route %r not found' % desired_route)
+    raise Error('Route %r not found' % desired_route)
   return route_ids
 
 
@@ -104,7 +115,7 @@ def _StopIDsByName(stops, desired_stop_name):
     if stop_name == desired_stop_name:
       stop_ids.add(stop_id)
   if not stop_ids:
-    raise util.Error('Stop %r not found' % desired_stop_name)
+    raise Error('Stop %r not found' % desired_stop_name)
   return stop_ids
 
 
@@ -166,7 +177,7 @@ def _LoadServiceDates():
       elif exception_type == 2:
         date_exclusions.setdefault(service_id, set()).add(date)
       else:
-        raise util.Error('Unexpected exception_type in calendar_dates.txt!')
+        raise Error('Unexpected exception_type in calendar_dates.txt!')
   # determine next _LOOK_AHEAD_IN_DAYS of schedule days to use in filtering services
   look_ahead_days = set(_AllDatesInPeriod(
       _TODAYS_DATETIME, _TODAYS_DATETIME + datetime.timedelta(days=_LOOK_AHEAD_IN_DAYS)))
@@ -182,7 +193,7 @@ def _LoadServiceDates():
       start_date = datetime.datetime.strptime(start_date, _DATE_REPR)
       end_date = datetime.datetime.strptime(end_date, _DATE_REPR)
       if not start_date <= _TODAYS_DATETIME <= end_date:
-        raise util.Error(
+        raise Error(
             'Current date (%s) is outside dates in calendar.txt (%s to %s)! '
             'You need to refresh Irish Rail data!' %
             (_TODAYS_DATE_REPR, start_date.strftime(_DATE_REPR), end_date.strftime(_DATE_REPR)))
@@ -236,19 +247,24 @@ def _WriteCSVs(output_tables):
 
 
 def _PrintTables(output_tables):
+  if not _HAS_PRETTYTABLE:
+    logging.error('prettytable module is necessary for text table printing. '
+                  'Run `pip3 install -U --user prettytable`')
+    return
   for bool_direction_id in sorted(output_tables):
     trips_table = output_tables[bool_direction_id]
     pt_obj = prettytable.PrettyTable(trips_table[0])
     for row in trips_table[1:]:
       pt_obj.add_row(row)
-    print()
-    print('%s %s table' % ('/'.join(_DESIRED_ROUT_NAMES), _DIRECTION(bool_direction_id)))
-    print()
-    print(pt_obj)
-    print()
+    click.echo()
+    click.echo('%s %s table' % ('/'.join(_DESIRED_ROUT_NAMES), _DIRECTION(bool_direction_id)))
+    click.echo()
+    click.echo(pt_obj)
+    click.echo()
 
 
-def main(_):
+@click.command()
+def tables():
   """Load Irish Rail data and convert timetables to useful data for some stops."""
   logging.info('START: IRISH RAIL TIMETABLE (for day %s)', _TODAYS_DATE_REPR)
   # get routes and find the one we're looking at now
@@ -278,7 +294,7 @@ def main(_):
     stops_names[fake_name] = fake_name
     interesting_stops_ids.add(fake_name)
     if not rel_min:
-      raise util.Error(
+      raise Error(
           'Fake stations cannot have zero delay from an actual station (on %r)' % fake_name)
   desired_stops_count += len(_FAKE_STOPS)
   # get the calendar
@@ -343,7 +359,7 @@ def main(_):
         stop_ordering[bool_direction_id] = tuple(s[0] for s in trip['stops'])
         break
     else:
-      raise util.Error('No trip was found that had all desired stops!')
+      raise Error('No trip was found that had all desired stops!')
     # go through all trips to be output and add (stop_id, None) value paddings to missing stations
     # raise if we find a discrepancy in the order
     for trip_id, trip_stops in ((trip['id'], trip['stops']) for trip in trips_table):
@@ -357,7 +373,7 @@ def main(_):
       # if we had an inverted order, the side effect of the above is to end up with a trip_stops
       # that is larger than desired_stops_count
       if len(trip_stops) > desired_stops_count:
-        raise util.Error('Found trip with iverted directionality: %s' % trip_id)
+        raise Error('Found trip with iverted directionality: %s' % trip_id)
     # now we can re-sort so we have the first available stop
     trips_table.sort(key=functools.cmp_to_key(_CmpStopsByFirstAvailableTime))
   # now we can build the actual output tables
@@ -379,7 +395,7 @@ def main(_):
       # add stops data
       for stop_n, (stop_id, arrival_time) in enumerate(trip['stops']):
         if stop_id != stop_ordering[bool_direction_id][stop_n]:
-          raise util.Error('Inconsistency found in trip %s' % trip['id'])  # should not happen!
+          raise Error('Inconsistency found in trip %s' % trip['id'])  # should not happen!
         row.append('X' if arrival_time is None else arrival_time.strftime('%H:%M'))
       row.append(translate_stop_name(trip['end'][0]))
       trips_table.append(tuple(row))
@@ -393,4 +409,4 @@ def main(_):
 
 # only execute main() if used directly --- not sure how robust this is...
 if __name__ == '__main__':
-  sys.exit(main(sys.argv))
+  tables()
