@@ -6,12 +6,12 @@ Misc Balparda's Code. Started in 2018/September.
 
 # Setup
 
-Just the basic:
+Just the basic, plus `click` and `prettytable`:
 
 ```
 $ hg clone https://balparda@bitbucket.org/balparda/miscbalpardacode
 $ sudo apt-get install python-pip python-dev python3-pip python3-dev pylint pylint3
-$ sudo pip3 install -U prettytable
+$ sudo pip3 install -U click prettytable
 ```
 
 # Irish Rail Timetable
