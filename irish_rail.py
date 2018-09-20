@@ -12,18 +12,19 @@ import logging
 
 import click
 # TODO: http://click.pocoo.org/5/setuptools/#setuptools-integration
-try:
-  import prettytable
-  _HAS_PRETTYTABLE = True
-except ImportError:
-  _HAS_PRETTYTABLE = False
+import prettytable
 
 __author__ = 'balparda@gmail.com (Daniel Balparda)'
 __version__ = (1, 0)
 
 
 # log format string
-LOG_FORMAT = '%(asctime)-15s: %(module)s/%(funcName)s/%(lineno)d: %(message)s'
+_LOG_FORMAT = '%(asctime)-15s: %(module)s/%(funcName)s/%(lineno)d: %(message)s'
+_VERBOSITY_LEVELS = {
+    0: logging.ERROR,
+    1: logging.INFO,
+    2: logging.DEBUG,
+}
 
 # rail data dir
 _DATA_DIR = 'data/irish_rail/'
@@ -54,10 +55,10 @@ def _LoadRoutes():  # like {route_id: route_long_name}
 def _RouteIDByName(routes, desired_route):
   route_ids = set()
   for route_id, route_long_name in routes.items():
-    if route_long_name.lower() == desired_route.lower():  # make route search case insensitive
+    if route_long_name == desired_route:
       route_ids.add(route_id)
   if not route_ids:
-    raise Error('Route %r not found' % desired_route)
+    raise Error('Route %r not found: use "list" command to see available routes' % desired_route)
   return route_ids
 
 
@@ -71,10 +72,10 @@ def _LoadStops():  # like {stop_id: stop_name}
 def _StopIDsByName(stops, desired_stop_name):
   stop_ids = set()
   for stop_id, stop_name in stops.items():
-    if stop_name.lower() == desired_stop_name.lower():  # make stop search case insensitive
+    if stop_name == desired_stop_name:
       stop_ids.add(stop_id)
   if not stop_ids:
-    raise Error('Stop %r not found' % desired_stop_name)
+    raise Error('Stop %r not found: use "list" command to see available stops' % desired_stop_name)
   return stop_ids
 
 
@@ -208,10 +209,6 @@ def _WriteCSVs(desired_rout_names, timetable_date_to_use, output_tables):
 
 
 def _PrintTables(desired_rout_names, output_tables):
-  if not _HAS_PRETTYTABLE:
-    logging.error('prettytable module is necessary for text table printing. '
-                  'Run `pip3 install -U --user prettytable`')
-    return
   for bool_direction_id in sorted(output_tables):
     trips_table = output_tables[bool_direction_id]
     pt_obj = prettytable.PrettyTable(trips_table[0])
@@ -224,62 +221,83 @@ def _PrintTables(desired_rout_names, output_tables):
     click.echo()
 
 
+def _PrintRoutes(routes):
+  click.echo()
+  r_obj = prettytable.PrettyTable(['Official Route Name'])
+  for name in sorted({n for n in routes.values()}):
+    r_obj.add_row([name])
+  click.echo(r_obj)
+
+
+def _PrintStops(stops_names):
+  click.echo()
+  s_obj = prettytable.PrettyTable(['Official Station Name'])
+  for name in sorted({n for n in stops_names.values()}):
+    s_obj.add_row([name])
+  click.echo(s_obj)
+
+
 @click.command()
 # see `click` module usage in:
 #   http://click.pocoo.org/5/quickstart/
 #   http://click.pocoo.org/5/options/
 #   http://click.pocoo.org/5/documentation/#help-texts
+@click.argument('operation', type=click.Choice(['list', 'print']))
 @click.option(
-    '--route', '-r', type=click.STRING, multiple=True,
-    help='Case-insensitive Irish Rail route/service name (ex: "DART"); '
-    'can be given more than once for multiple routes/services.')
+    '--route', '-r', 'routes_tuple', type=click.STRING, multiple=True,
+    help='Case-sensitive Irish Rail route/service name (ex: "DART"); '
+    'can be given more than once for multiple routes/services; at least one required.')
 @click.option(
-    '--stop', '-s', type=click.STRING, multiple=True,
-    help='Case-insensitive Irish Rail stop name to include in output (ex: "Grand Canal Dock"); '
-    'can be given more than once for multiple stops.')
+    '--stop', '-s', 'stops_tuple', type=click.STRING, multiple=True,
+    help='Case-sensitive Irish Rail stop name to include in output (ex: "Grand Canal Dock"); '
+    'can be given more than once for multiple stops, and at least 2 are required.')
 @click.option(
-    '--alias', '-a', type=(click.STRING, click.STRING), multiple=True,
-    help='Station alias as 2 strings, the first is the Irish Rail name and the second is '
-    'the alias (ex: -a "Bray Daly" "Bray"); can be given more than once.')
+    '--alias', '-a', 'aliases_tuple', type=(click.STRING, click.STRING), multiple=True,
+    help='Station alias as 2 strings, the first is the case-sensitive Irish Rail name and the '
+    'second is the alias (ex: -a "Bray Daly" "Bray"); can be given more than once.')
 @click.option(
-    '--fake', '-f', type=(click.STRING, click.STRING, click.INT), multiple=True,
+    '--fake', '-f', 'fakes_tuple', type=(click.STRING, click.STRING, click.INT), multiple=True,
     help='Fake (inserted) station to display in output as 2 strings and an int delta in number '
     'of minutes before or after; the first string is the alias for the fake station, the second '
-    'string is the Irish Rail station to count the delta from, and the integer is the delta, '
-    'in whole minutes (ex: -f "Home" "Bray Daly" -10, meaning "Home" is 10 min south of Bray); '
-    'this delta is counted towards the bool_direction_id==False direction of the data table '
-    '(on the DART service this means the NORTH directon).')
+    'string is the Irish Rail case-sensitive station to count the delta from, and the integer is '
+    'the delta, in whole minutes (ex: -f "Home" "Bray Daly" -10, meaning "Home" is 10 min south '
+    'of Bray); this delta is counted towards the bool_direction_id==False direction of the data '
+    'table (on the DART service this means the NORTH directon); can be given more than once.')
 @click.option(
-    '--print-out/--no-print-out', default=True,
+    '--print-out/--no-print-out', 'print_out', default=True,
     help='Print to screen? Default is yes (--print-out).')
 @click.option(
-    '--csv-out/--no-csv-out', default=False,
+    '--csv-out/--no-csv-out', 'csv_out', default=False,
     help='Save CSV file? Default is no (--no-csv-out).')
 @click.option(
-    '--idcol/--no-idcol', default=False,
+    '--idcol/--no-idcol', 'idcol_out', default=False,
     help='Add Irish Rail trip ID column to output? Default is no (--no-idcol).')
 @click.option(
-    '--date', '-d', type=click.STRING, default='',
+    '--date', '-d', 'date_to_use', type=click.STRING, default='',
     help='If given, the date that will be used for producing timetables; '
     'Format has to be YYYYMMDD; If not given, current date will be used.')
 @click.option(
-    '--irregular/--no-irregular', default=False,
+    '--irregular/--no-irregular', 'allow_irregulars', default=False,
     help='Dangerous; Allow for irregular schedules; By default (--no-irregular) will skip all '
     'irregular schedules even if they serve some days that could be listed; an example would be a '
     'trip schedule that serves Mon & Sat but not other weekdays: it is irregular but could be '
     'listed on Sat\'s schedule even if not listed as a working day.')
 @click.option(
-    '--max-trips', type=click.IntRange(0, 50000, clamp=True), default=0,
+    '--max-trips', 'max_trips', type=click.IntRange(0, 50000, clamp=True), default=0,
     help='Dangerous; If given, will limit the number of trips (rows) in the output, for debugging.')
 @click.option(
-    '--verbose', '-v', count=True,
+    '--verbose', '-v', 'verbosity_level', count=True,
     help='Verbose level; default is errors only; -v includes info/warning; -vv includes debug.')
 def tables(
-    route, stop, alias, fake, print_out, csv_out, idcol, date, irregular, max_trips, verbose):
-  """Load Irish Rail route data and output custom timetables. Typical examples:
+    operation, routes_tuple, stops_tuple, aliases_tuple, fakes_tuple,
+    print_out, csv_out, idcol_out, date_to_use, allow_irregulars, max_trips, verbosity_level):
+  """Load Irish Rail route data and output custom timetables. OPERATION is either "list" to
+  show Irish Rail official route and station names or "print" to produce a custom timetable
+  for certain stops. Typical examples:
 
   \b
-  ./irish_rail.py --csv-out --route DART \\
+  ./irish_rail.py list
+  ./irish_rail.py print --csv-out --route DART \\
       --stop "Howth Junction and Donaghmede" \\
       --stop "Tara St" \\
       --stop "Grand Canal Dock" \\
@@ -291,48 +309,59 @@ def tables(
   """
   # set logging level
   logging.basicConfig(
-    level={0: logging.ERROR, 1: logging.INFO, 2: logging.DEBUG}[verbose if verbose <= 2 else 2],
-    format=LOG_FORMAT)
-  # process flags and give some initial messages
-  # TODO: more thorough processing AND LOGGING of flags here
+      level=_VERBOSITY_LEVELS[verbosity_level if verbosity_level <= 2 else 2], format=_LOG_FORMAT)
+  logging.info('START: IRISH RAIL CUSTOM TIMETABLE')
+  # load oficial routes and stops first, as we might need to print those
+  routes, stops_names = _LoadRoutes(), _LoadStops()
+  if operation == 'list':
+    logging.info('OPERATION: list routes & stops')
+    _PrintRoutes(routes)
+    _PrintStops(stops_names)
+    return
+  logging.info('OPERATION: print custom timetable')
+  # process basic flags
   if not print_out and not csv_out:
     click.echo('With --no-print-out and --no-csv-out there is nothing to do!')
     return
-  stop = {s.strip() for s in stop if s.strip()}
-  if len(stop) < 2:
-    click.echo('With less than 2x --stop there is nothing to do!')
+  desired_rout_names = {r.strip() for r in routes_tuple if r.strip()}
+  desired_route_ids = set()
+  for route_name in desired_rout_names:
+    desired_route_ids.update(_RouteIDByName(routes, route_name))
+  stops_set = {s.strip() for s in stops_tuple if s.strip()}
+  if not desired_rout_names or len(stops_set) < 2:
+    click.echo('With less than one --route and two --stop there is nothing to do!')
     return
-  alias = {s.strip(): a.strip() for s, a in alias if s.strip()}
-  fake = {a.strip(): (s.strip(), d) for a, s, d in fake if s.strip()}
+  aliases_dict = {s.strip(): a.strip() for s, a in aliases_tuple if s.strip()}
+  fakes_dict = {a.strip(): (s.strip(), d) for a, s, d in fakes_tuple if s.strip()}
   # compute date and some date utils
-  date = date.strip()
-  timetable_date_to_use = (datetime.datetime.strptime(date, _DATE_REPR).date() if date else
-                           datetime.date.today())
+  date_to_use = date_to_use.strip()
+  timetable_date_to_use = (datetime.datetime.strptime(date_to_use, _DATE_REPR).date()
+                           if date_to_use else datetime.date.today())
   timetable_date_repr = timetable_date_to_use.strftime(_DATE_REPR)
   timetable_datetime = datetime.datetime.combine(timetable_date_to_use, datetime.time(hour=0))
   add_minutes_to_time = lambda t, m: (datetime.datetime.combine(timetable_date_to_use, t) +
                                       datetime.timedelta(minutes=m)).time()
-  logging.info('START: IRISH RAIL TIMETABLE (for day %s)', timetable_date_repr)
-  # get routes and find the one we're looking at now
-  routes = _LoadRoutes()
-  desired_rout_names, desired_route_ids = set(route), set()
-  for route_name in desired_rout_names:
-    desired_route_ids.update(_RouteIDByName(routes, route_name))
+  # log the options
+  logging.info('Routes: %s', ', '.join(repr(n) for n in sorted(desired_rout_names)))
+  logging.info('Stations: %s', ', '.join(repr(n) for n in sorted(stops_set)))
+  logging.info(
+      'Aliases: %s', ', '.join('%r=%r' % (n, aliases_dict[n]) for n in sorted(aliases_dict)))
+  logging.info(
+      'Fake Stations: %s', ', '.join(
+          '%r=%r/%dmin' % (n, fakes_dict[n][0], fakes_dict[n][1]) for n in sorted(fakes_dict)))
+  logging.info('Date: %s', timetable_date_repr)
   # get stops and find the interesting ones; note one stop name can translate to multiple IDs
-  stops_names = _LoadStops()
   station_aliases = {
       stop_id: stop_alias
-      for stop_name, stop_alias in alias.items()
+      for stop_name, stop_alias in aliases_dict.items()
       for stop_id in _StopIDsByName(stops_names, stop_name) if stop_alias}
   translate_stop_name = lambda stop_id: station_aliases.get(stop_id, None) or stops_names[stop_id]
-  interesting_stops = {
-      stop_name: _StopIDsByName(stops_names, stop_name) for stop_name in stop}
-  desired_stops_count = len(stop)
-  interesting_stops_ids = {
-      stop_id for stops_set in interesting_stops.values() for stop_id in stops_set}
+  interesting_stops = {stop_name: _StopIDsByName(stops_names, stop_name) for stop_name in stops_set}
+  desired_stops_count = len(stops_set)
+  interesting_stops_ids = {stop_id for stops in interesting_stops.values() for stop_id in stops}
   # add "fake stops" and then monkey-patch the fake stops into the structures above
   fake_stops = {stop_id: (fake_name, rel_min)
-                for fake_name, (rel_stop_name, rel_min) in fake.items()  # pylint: disable=not-an-iterable
+                for fake_name, (rel_stop_name, rel_min) in fakes_dict.items()  # pylint: disable=not-an-iterable
                 for stop_id in _StopIDsByName(stops_names, rel_stop_name)}
   for fake_name, rel_min in fake_stops.values():
     interesting_stops[fake_name] = {fake_name}  # NOTE: for fake stops the ID and name are the same!
@@ -341,7 +370,7 @@ def tables(
     if not rel_min:
       raise Error(
           'Fake stations cannot have zero delay from an actual station (on %r)' % fake_name)
-  desired_stops_count += len(fake)
+  desired_stops_count += len(fakes_dict)
   # get the calendar
   service_dates, service_exclusions = _LoadServiceDates(timetable_datetime)
   # load trips and timetables, filtered by the desired route
@@ -365,7 +394,7 @@ def tables(
           trip = trips[trip_id]
           service_id = trip[0]
           week_schedule = service_dates[service_id]
-          if not irregular and week_schedule[3]:
+          if not allow_irregulars and week_schedule[3]:
             logging.debug('Skipping trip %s because it has an irregular schedule', trip_id)
             continue
           if trip[1] == bool_direction_id and week_schedule[week_index]:
@@ -427,7 +456,7 @@ def tables(
     trips_table = output_tables[bool_direction_id]
     trips_dict_table = output_dict[bool_direction_id]
     # put the header in as the first line
-    header = ['Trip ID', 'Days', 'Origin'] if idcol else ['Days', 'Origin']
+    header = ['Trip ID', 'Days', 'Origin'] if idcol_out else ['Days', 'Origin']
     for stop_id in stop_ordering[bool_direction_id]:
       header.append(translate_stop_name(stop_id))
     header.append('Destination')
@@ -439,7 +468,7 @@ def tables(
         logging.warning('Trips count was capped at %d, but there were more.', max_trips)
         break
       # add type and start
-      row = [trip['id']] if idcol else []
+      row = [trip['id']] if idcol_out else []
       row.append(_WEEK_TYPE[trip['week']])
       row.append(translate_stop_name(trip['start'][0]))
       # add stops data
