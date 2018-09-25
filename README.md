@@ -35,7 +35,7 @@ along with this program. If not, see http://www.gnu.org/licenses/gpl-3.0.txt.
 Just the basic, plus `click` and `prettytable` Python 3 packages:
 
 ```
-$ hg clone https://balparda@bitbucket.org/balparda/miscbalpardacode
+$ hg clone https://balparda@bitbucket.org/balparda/irishrailtimetable
 $ sudo apt-get install python3-pip pylint3
 $ sudo pip3 install -U click prettytable
 ```
